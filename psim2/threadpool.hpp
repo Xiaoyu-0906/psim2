@@ -171,7 +171,8 @@ private:
                 f(i);
             }
             ran = true;
-            if (myDone.fetch_add(end - start, std::memory_order_acq_rel) + (end - start) == n && myMainWaiting.load()) {
+            // seq_cst pairs with myMainWaiting.store(true) before myDoneCv.wait
+            if (myDone.fetch_add(end - start, std::memory_order_seq_cst) + (end - start) == n && myMainWaiting.load()) {
                 std::lock_guard<std::mutex> lk(myMutex);
                 myDoneCv.notify_one();
             }

@@ -184,6 +184,9 @@ void Sim::load(const std::string& file) {
         while (ss >> w) {
             tok.push_back(w);
         }
+        if (tok.empty() || tok[0][0] == '#') {
+            continue;
+        }
         const std::string& k = tok[0];
         if (k == "STEP") {
             TS = std::stod(tok[1]);
