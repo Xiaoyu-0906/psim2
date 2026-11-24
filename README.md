@@ -1,155 +1,293 @@
-# psim2 (`v0.1-experimental`)
+# psim2
 
-**psim2** is a parallel, deterministic microscopic traffic simulator for **road, public transport, pedestrian, and rail networks**. It re-implements selected [Eclipse SUMO 1.28.0](https://github.com/eclipse-sumo/sumo/tree/v1_28_0) behavioral models in ~35,000 lines of dependency-free C++17 (requiring only POSIX threads and `zlib`) on a contiguous, phase-parallel memory layout.
+[![Build and test](https://github.com/Xiaoyu-0906/psim2/actions/workflows/ci.yml/badge.svg)](https://github.com/Xiaoyu-0906/psim2/actions/workflows/ci.yml)
+[![License: EPL-2.0](https://img.shields.io/badge/license-EPL--2.0-blue.svg)](LICENSE)
 
-- **Deterministic across thread counts**: 1-thread and 4-thread runs produce byte-identical `fcd.csv` and `tripinfo.csv` outputs (checked via SHA-256 in [CI](.github/workflows/ci.yml)) and pass 4-thread ThreadSanitizer cleanly.
-- **Validated against SUMO 1.28.0**: reproduces full-day Berlin Mitte (BeST v2, 361,122 vehicles, 3 seeds vs 3 seeds) within SUMO's own seed-to-seed variance at **~11.4× median wall-clock speedup** on 4 threads (see [Berlin Mitte validation](#berlin-mitte-best-v2-validation)).
-- **Self-contained quick start**: ships with a preconverted 3 × 3 urban grid (`examples/grid3x3/scene.psim2`) that compiles and runs on Linux and macOS without installing SUMO.
+psim2 is a multithreaded microscopic traffic simulator for road traffic, public
+transport, pedestrians, and rail. It reimplements selected behavioral models
+from [Eclipse SUMO 1.28.0](https://github.com/eclipse-sumo/sumo/tree/v1_28_0)
+in C++17 on top of contiguous arrays and phase-parallel time steps, with only
+POSIX threads and `zlib` as dependencies. Output does not depend on the thread
+count: 1-thread and 4-thread runs produce byte-identical results.
 
-> **Experimental status (`v0.1-experimental`)**: `psim2` is an offline batch simulation engine and SUMO XML converter. It does not include a GUI, TraCI server, live topology editing, taxis, opposite-direction overtaking, or complete SL2015 sublane coverage (see [Known Limitations](#known-limitations)).
+This is a personal experiment (`v0.1-experimental`) and is not affiliated with
+the Eclipse SUMO project or DLR. The `.psim2` scene format and command-line
+options may still change, and parts of SUMO are not implemented yet (see
+[Limitations](#limitations)).
 
----
+## Building
 
-## Quick Start
-
-**Requirements**: `make`, a C++17 compiler (`g++` or `clang++`; `Makefile` selects Clang on macOS and GCC on Linux and accepts a `CXX` override), POSIX threads, and `zlib` development headers. No SUMO installation is needed for the bundled grid example.
+Supported on Linux and macOS. Requirements: `make`, a C++17 compiler (`clang++`
+is selected by default on macOS, `g++` on Linux; override with `CXX`), POSIX
+threads, and `zlib` development headers.
 
 ```sh
 make -C psim2 -j4
-out=$(mktemp -d)
-./psim2/psim2 examples/grid3x3/scene.psim2 --threads 4 --fcd --out "$out/"
-wc -l "$out/fcd.csv" "$out/tripinfo.csv"
 ```
 
-Expected output: **`7,244`** lines in `fcd.csv` (7,243 vehicle states + header) and **`114`** lines in `tripinfo.csv` (113 completed trips + header). Use a fresh output directory with a trailing `/` so `--out` writes files inside that directory. Run `make -C psim2 clean` to remove build artifacts.
+This builds `psim2/psim2`. Other Makefile targets are `psim2-tsan`
+(ThreadSanitizer), `psim2-debug` (ASan + UBSan), and `clean`.
 
-Run the built-in railway regression fixtures and 4-thread ThreadSanitizer smoke test:
+## Quick start
+
+`examples/grid3x3/` contains a preconverted 3×3 urban grid (113 vehicles), so
+you can run psim2 without installing SUMO:
 
 ```sh
-python3 tests/rail_regress.py psim2/psim2
-make -C psim2 psim2-tsan
-out=$(mktemp -d)
-TSAN_OPTIONS=halt_on_error=1 ./psim2/psim2-tsan examples/grid3x3/scene.psim2 --threads 4 --fcd --out "$out/"
+mkdir -p /tmp/grid
+./psim2/psim2 examples/grid3x3/scene.psim2 --threads 4 --fcd --out /tmp/grid/
+wc -l /tmp/grid/fcd.csv /tmp/grid/tripinfo.csv
 ```
 
----
+Expected line counts: 7,244 in `fcd.csv` (7,243 vehicle states + header) and
+114 in `tripinfo.csv` (113 completed trips + header).
 
-## Implemented Capabilities
+`--out` is a filename prefix rather than a directory path, so make sure the
+directory exists and keep the trailing `/`.
 
-| Domain | Capabilities in `v0.1` |
-|---|---|
-| **Roads & Junctions** | Internal lanes and junctions, conflict geometry (`foe links` / `foe lanes`), priority / right-before-left / unregulated / dead-end / zipper junctions, static and actuated traffic lights (with automatic loop detectors), jam/yield/wrong-lane teleports, junction collision checks. |
-| **Car-Following & Lane-Changing** | 17 SUMO car-following models (`Krauss`, `KraussOrig1`, `KraussPS`, `KraussX`, `SmartSK`, `Daniel1`, `PWagner2009`, `IDM`, `IDMM`, `EIDM`, `BKerner`, `Wiedemann`, `W99`, `ACC`, `CACC`, `Rail`, `NaSch`), ballistic updates, action step lengths, full `LC2013` lane-changing, indirect bicycle turns. |
-| **Public Transport & Parking** | Scheduled bus stops (`duration`, `until`, `parking=true/false`, `parkingLength`), off-road and on-road `parkingArea`, reservations, badges, and full `parkingAreaReroute` search with memory and frustration. |
-| **Routing & Scheduled Edits** | Pre-insertion and periodic Dijkstra rerouting, closing/variable-speed rerouters, and between-step `--edits` files for lane speed limits and lane permissions (signal program updates supported internally). |
-| **Pedestrians & Intermodal** | `MSPModel_Striping` sidewalks, walking areas, signalized and unsignalized crossings, vehicle–pedestrian yielding, `personTrip` intermodal routing (walk / bus / car / bike), stop access stages, and container transport/tranship. [Pedestrian notes (Chinese)](docs/PEDESTRIANS.md) |
-| **Rail Operations** | `rail_signal` driveways (flank protection, bidirectional tracks, sidings, moving block), rail crossings, bidirectional train reversal, `Rail` traction/resistance curves, `RailwayRouter`, split/join, overtaking and station rerouting, deadlock detection, and rail block/vehicle/deadlock XML outputs. |
-| **Parallel Architecture** | Phase-barrier execution (`planMove` → lock-free bucketed junction approaches → `executeMove` → merge → graph-colored parallel lane-changing → insertion), 3-wave parallel pedestrian stepping, speculative parallel rail signal updates, counter-based RNG for thread-count determinism, and `--sumo-order` for stepwise SUMO comparison. |
+## Usage
 
----
-
-## Validation & Benchmarks
-
-### Summary Matrix
-
-| Suite / Check | Result | Conditions & Notes |
-|---|---|---|
-| **GitHub Actions CI** | Pass on Ubuntu (`g++`, `clang++`) & macOS (`clang++`) | Shell/Python syntax checks, BeST input diagnostics, `zlib` check, zero-warning `-Wall -Wextra` build, 1 vs 4 thread SHA-256 byte identity on `examples/grid3x3`, `tests/rail_regress.py`, and 4-thread TSan on macOS. |
-| **Berlin Mitte full-day (BeST v2)** | **Statistically indistinguishable from SUMO 1.28.0** | **2026-11-24 rerun** on release commit `61cd8885`: 361,122 vehicles, 3 seeds vs 3 seeds, **+0.02%** car & bus mean trip duration, **11.4× median wall-clock speedup** (details below). |
-| **Release railway regressions** | **2 / 2 PASS** | Positive-speed waypoint insertion (departure & following lanes) and 65 m train reversal across an internal lane on a 42 m branch (`tests/rail_regress.py`). |
-| **SUMO 1.28 railway TextTests** | **321 / 323** (`314` exact + `7` matched errors) | Derandomized `--sumo-order` comparison (4 of the 314 had zero vehicle states; rail XML outputs also compared). The 2 remaining diffs (`rail/tramwayLoop/basic` at 1,863 s and `track_closed` at 2,286 s; `tram8` at 51.94 m / 6.19 m/s vs SUMO's 52.47 m / 6.71 m/s) stem intentionally from the reversal patch counting only ordinary route edges while SUMO 1.28 also counts internal lanes. The exact gate currently exits 1. |
-| **Ten other regular TextTest suites** | **1,421 / 1,881** zero-difference markers | Historical run on prior engine/harness (includes 14 matched errors; rail, sublane, and synthetic cases counted separately); non-matches are mainly unsupported features or stochastic demand. |
-| **SL2015 sublane suite** | **207 / 302** matching cases | Historical partial coverage; lateral maneuver reservations and sublane lane-change output remain incomplete. [Sublane notes (Chinese)](docs/SUBLANE.md) |
-
----
-
-### Berlin Mitte (BeST v2) Validation
-
-**2026-11-24 full-day comparison** (`0–86,400 s`, **361,122 vehicles** including **3,223 buses**, 1,809 junctions, 281 traffic lights) between official **Eclipse SUMO 1.28.0** and release commit **`61cd8885`** (`psim2` at 4 threads, sequential; SUMO 1.28.0 single-threaded, 3 seeds in parallel; all stochasticity enabled, seeds `1, 2, 3`, via `tools/bestrun.py` + `tools/bestcompare.py`).
-
-#### Statistical Agreement (3 seeds vs 3 seeds)
-
-| Metric | SUMO 1.28.0 (mean ± sd) | psim2 `61cd8885` (mean ± sd) | Diff | z-score |
-|---|---:|---:|---:|---:|
-| Inserted vehicles | `361,122 ± 0` | `361,122 ± 0` | `0.00%` | — |
-| Teleports (total) | `92.0 ± 6.1` | `86.0 ± 20.4` | `-6.52%` | `-0.5` |
-| Car trip duration (357.7k cars) | `414.90 ± 0.07 s` | `414.97 ± 0.06 s` | **`+0.02%`** | `+1.2` |
-| Car route length | `3,476.62 ± 0.02 m` | `3,476.62 ± 0.02 m` | **`+0.00%`** | `+0.4` |
-| Car time loss | `126.65 ± 0.08 s` | `126.59 ± 0.08 s` | `-0.04%` | `-0.8` |
-| Car waiting time | `56.20 ± 0.03 s` | `56.17 ± 0.08 s` | `-0.06%` | `-0.6` |
-| Bus trip duration (3,223 buses) | `1,149.09 ± 0.21 s` | `1,149.32 ± 0.21 s` | **`+0.02%`** | `+1.4` |
-| Bus time loss | `197.08 ± 0.86 s` | `197.74 ± 0.30 s` | `+0.33%` | `+1.2` |
-| Bus stop time | `492.57 ± 0.98 s` | `492.20 ± 0.15 s` | `-0.08%` | `-0.6` |
-
-- **49,074 hourly edge cells** (≥20 veh/h): inter-run RMS between `psim2` and SUMO matches SUMO's own seed-to-seed RMS:
-  - Flow (`entered`, mean 178.32): SUMO–SUMO `2.358`, psim2–psim2 `2.404`, **psim2–SUMO `2.400`** (bias `-0.001`)
-  - Mean speed (mean 8.28 m/s): SUMO–SUMO `0.367`, psim2–psim2 `0.363`, **psim2–SUMO `0.363`** (bias `+0.001`)
-  - Waiting time (mean 0.11 s): SUMO–SUMO `0.050`, psim2–psim2 `0.052`, **psim2–SUMO `0.050`** (bias `-0.000`)
-- **Per-vehicle car trip durations** (357,670 matched cars): RMS difference is **`57.7 s`** across SUMO–SUMO, psim2–psim2, and **psim2–SUMO** (mean bias `+0.07 s`).
-
-#### Wall-Clock Speed & Memory (2026-11-24, Apple Silicon 10-core)
-
-| Engine | Threads | Wall Time per Seed (`1 / 2 / 3`) | Median Wall | User CPU (mean) | Full-Run Peak RSS |
-|---|---:|---|---:|---:|---:|
-| **SUMO 1.28.0** | 1 | `1,490.2 s` / `1,480.6 s` / `1,479.9 s` | `1,480.6 s` | `1,356.7 s` | `1.34 – 1.40 GB` |
-| **psim2 `61cd8885`** | 4 | `127.4 s` / `129.9 s` / `363.3 s`* | **`129.9 s`** (**11.4×**) | `431.8 s` (seeds 1–2) | `0.87 – 1.91 GB`† |
-
-- \*Measured under concurrent background compilation load (1-min load average `9.4` at start, peaking at `33.4` during `psim2` seed 3, `9.7` after SUMO); treat these timings as a loaded-machine measurement rather than an isolated idle microbenchmark.
-- †Full-day peak RSS includes `--stop-output` and buffered per-vehicle trip records across all 361k vehicles; historical post-load memory immediately after loading Mitte is `0.45 GB` (down from `1.28 GB` before cold-field separation).
-- BeST v2 dataset (CC BY 4.0, DCAITI / TU Berlin): [best-scenario-v2.zip](https://www.dcaiti.tu-berlin.de/research/simulation/downloads/get/best-scenario-v2.zip).
-
----
-
-## Converting SUMO Scenarios & Running Full Verification
-
-Convert any standard SUMO network and route file into a `.psim2` scene:
+Converting SUMO XML scenarios requires Python 3.12+:
 
 ```sh
 python3 tools/psim2scen.py net.net.xml routes.rou.xml scene.psim2 --full-net
 ```
 
-To run the SUMO 1.28 comparison harnesses, install the pinned packages in an activated Python 3.12+ virtual environment and provide the `tests/sumo` directory from the [SUMO v1_28_0 source tree](https://github.com/eclipse-sumo/sumo/tree/v1_28_0/tests/sumo):
+Without `--full-net`, the network is trimmed to the junctions used by the
+routes. Run `python3 tools/psim2scen.py --help` for additional files, time
+bounds, and overrides such as `--sigma` and `--speeddev`.
+
+Run a converted scene:
+
+```sh
+mkdir -p results
+./psim2/psim2 scene.psim2 --threads 8 --seed 1 --out results/
+```
+
+Common options:
+
+| Option | Description |
+|---|---|
+| `--threads N` | Number of worker threads |
+| `--seed N` | Random seed |
+| `--begin S`, `--end S` | Simulation start and end time in seconds |
+| `--out PREFIX` | Output file prefix |
+| `--fcd` | Write per-step vehicle states (`fcd.csv`, plus `personfcd.csv` if persons are present) |
+| `--gzip` | Gzip-compress large per-step outputs |
+| `--edits FILE` | Apply scheduled lane speed or permission edits between steps |
+| `--sumo-order` | Run in SUMO's sequential processing order for step-by-step comparison |
+
+Many SUMO flags are accepted under their original names (`--pedestrian.*`,
+`--device.rerouting.*`, `--weights.*`, `--time-to-teleport`, etc.); see
+[psim2/main.cpp](psim2/main.cpp) for the full list.
+
+Default outputs are `tripinfo.csv`, `summary.csv`, `summary.txt`,
+`lanechange.csv` (disable with `--no-lc-output`), and `collisions.csv`. Other
+outputs (`fcd.csv`, `edgedata.csv`, `stopinfo.csv`, `personinfo.csv`, and rail
+signal XML files) are written when their options or scene features are active.
+
+An `--edits` file has one edit per line (`TIME KIND LANE VALUE`):
+
+```text
+120 LANE_SPEED A0A1_0 8.33
+300 LANE_PERMISSIONS A1A0_0 passenger,bicycle
+```
+
+## Implemented features
+
+- **Roads and junctions**: internal lanes and junctions, conflict geometry
+  (`foe links` / `foe lanes`), priority, right-before-left, unregulated,
+  dead-end, and zipper junctions, static and actuated traffic lights (with
+  automatic loop detectors), jam/yield/wrong-lane teleports, and junction
+  collision checks.
+- **Driving models**: 17 SUMO car-following models (`Krauss`, `KraussOrig1`,
+  `KraussPS`, `KraussX`, `SmartSK`, `Daniel1`, `PWagner2009`, `IDM`, `IDMM`,
+  `EIDM`, `BKerner`, `Wiedemann`, `W99`, `ACC`, `CACC`, `Rail`, `NaSch`),
+  ballistic updates, action step lengths, `LC2013` lane-changing, and indirect
+  bicycle turns.
+- **Public transport and parking**: bus stops (`duration`, `until`, `parking`,
+  `parkingLength`), on-road and off-road `parkingArea` with reservations and
+  badges, and `parkingAreaReroute` with memory and frustration.
+- **Routing and scheduled edits**: pre-insertion and periodic Dijkstra
+  rerouting, closing and variable-speed rerouters, and between-step lane speed
+  / permission edits via `--edits` (signal program updates supported
+  internally).
+- **Pedestrians and intermodal**: `MSPModel_Striping` sidewalks, walking areas,
+  signalized and unsignalized crossings, vehicle-pedestrian yielding,
+  `personTrip` routing (walk, bus, car, bike), stop access stages, and
+  container transport/tranship. Implementation notes (in Chinese):
+  [docs/PEDESTRIANS.md](docs/PEDESTRIANS.md).
+- **Rail**: `rail_signal` driveways (flank protection, bidirectional tracks,
+  sidings, moving block), rail crossings, bidirectional reversal, `Rail`
+  traction/resistance curves, `RailwayRouter`, split/join, overtaking and
+  station rerouting, deadlock detection, and rail block/vehicle/deadlock XML
+  outputs.
+
+Each step runs as barrier-separated phases (`planMove` → lock-free bucketed
+junction approach registration → `executeMove` → merge → graph-colored parallel
+lane-changing → insertion), with 3-wave parallel pedestrian stepping and
+speculative parallel rail signal updates. Random draws use a stateless
+counter-based hash instead of a shared stream so results stay identical across
+thread counts.
+
+## Validation
+
+### Berlin Mitte full day (BeST v2)
+
+Compared on 2026-11-24 against official Eclipse SUMO 1.28.0 using the
+[BeST v2](https://www.dcaiti.tu-berlin.de/research/simulation/downloads/get/best-scenario-v2.zip)
+Berlin Mitte scenario (0–86,400 s, 361,122 vehicles including 3,223 buses,
+1,809 junctions, 281 traffic lights). Both engines ran 3 seeds (`1, 2, 3`) with
+all stochasticity enabled (SUMO single-threaded, psim2 commit `61cd8885` on 4
+threads) via `tools/bestrun.py` and `tools/bestcompare.py`.
+
+| Metric | SUMO 1.28.0 (mean ± sd) | psim2 (mean ± sd) | Diff | z |
+|---|---:|---:|---:|---:|
+| Inserted vehicles | 361,122 ± 0 | 361,122 ± 0 | 0.00% | – |
+| Teleports | 92.0 ± 6.1 | 86.0 ± 20.4 | -6.52% | -0.5 |
+| Car trip duration (357.7k cars) | 414.90 ± 0.07 s | 414.97 ± 0.06 s | +0.02% | +1.2 |
+| Car route length | 3,476.62 ± 0.02 m | 3,476.62 ± 0.02 m | +0.00% | +0.4 |
+| Car time loss | 126.65 ± 0.08 s | 126.59 ± 0.08 s | -0.04% | -0.8 |
+| Car waiting time | 56.20 ± 0.03 s | 56.17 ± 0.08 s | -0.06% | -0.6 |
+| Bus trip duration (3,223 buses) | 1,149.09 ± 0.21 s | 1,149.32 ± 0.21 s | +0.02% | +1.4 |
+| Bus time loss | 197.08 ± 0.86 s | 197.74 ± 0.30 s | +0.33% | +1.2 |
+| Bus stop time | 492.57 ± 0.98 s | 492.20 ± 0.15 s | -0.08% | -0.6 |
+
+Across 49,074 hourly edge cells (≥ 20 veh/h), inter-run RMS between psim2 and
+SUMO matches SUMO's own seed-to-seed RMS:
+
+| Edge-hour metric | SUMO–SUMO RMS | psim2–psim2 RMS | psim2–SUMO RMS | Bias |
+|---|---:|---:|---:|---:|
+| Flow, `entered` (mean 178.32) | 2.358 | 2.404 | 2.400 | -0.001 |
+| Mean speed (mean 8.28 m/s) | 0.367 | 0.363 | 0.363 | +0.001 |
+| Waiting time (mean 0.11 s) | 0.050 | 0.052 | 0.050 | -0.000 |
+
+For individual cars (357,670 matched by ID), trip duration RMS is 57.7 s across
+SUMO–SUMO, psim2–psim2, and psim2–SUMO (mean bias +0.07 s).
+
+Runtime and memory on a 10-core Apple Silicon machine:
+
+| Engine | Threads | Wall time (seeds 1 / 2 / 3) | Median wall | User CPU (mean) | Peak RSS |
+|---|---:|---|---:|---:|---:|
+| SUMO 1.28.0 | 1 | 1,490.2 / 1,480.6 / 1,479.9 s | 1,480.6 s | 1,356.7 s | 1.34–1.40 GB |
+| psim2 | 4 | 127.4 / 129.9 / 363.3 s | 129.9 s (~11.4×) | 431.8 s (seeds 1–2) | 0.87–1.91 GB |
+
+Notes on this measurement:
+- The host was running background compilation during the test (1-min load
+  average 9.4 at start, peaking at 33.4 during psim2 seed 3, 9.7 after SUMO),
+  which caused the 363 s outlier on seed 3. Treat these timings as a rough
+  loaded-machine comparison rather than an isolated benchmark.
+- Full-day peak RSS includes `--stop-output` and buffered trip records for all
+  361k vehicles. Right after loading Mitte, psim2 uses about 0.45 GB.
+
+### SUMO 1.28 test suites
+
+| Suite | Result | Notes |
+|---|---|---|
+| Rail TextTests | 321 / 323 | 314 exact matches + 7 matched errors (`--derandomize`, `--sumo-order`; 4 of 314 have no vehicle states; rail XML outputs also compared). |
+| SL2015 sublane | 207 / 302 | Older run; lateral maneuver reservations and sublane lane-change output remain incomplete. Notes (Chinese): [docs/SUBLANE.md](docs/SUBLANE.md). |
+| Ten other suites | 1,421 / 1,881 | Older run on a previous engine/harness version (includes 14 matched errors); mismatches are mainly unsupported features or stochastic demand. |
+
+The 2 rail differences (`rail/tramwayLoop/basic` at 1,863 s and `track_closed`
+at 2,286 s, where `tram8` is at 51.94 m / 6.19 m/s vs SUMO's 52.47 m / 6.71
+m/s) are intentional: psim2's reversal logic counts only ordinary route edges,
+whereas SUMO 1.28 also counts internal lanes. Because of these two cases, the
+rail run of `tools/sumotest.py` currently exits with status 1.
+
+## Testing
+
+Standalone checks that do not require SUMO:
+
+```sh
+python3 tests/rail_regress.py psim2/psim2
+
+make -C psim2 psim2-tsan
+mkdir -p /tmp/grid-tsan
+TSAN_OPTIONS=halt_on_error=1 ./psim2/psim2-tsan examples/grid3x3/scene.psim2 --threads 4 --fcd --out /tmp/grid-tsan/
+```
+
+[CI](.github/workflows/ci.yml) runs on Ubuntu (`g++`, `clang++`) and macOS
+(`clang++`): warning-free `-Wall -Wextra` build, 1- vs 4-thread SHA-256 output
+check on `examples/grid3x3`, `tests/rail_regress.py`, and 4-thread TSan on
+macOS.
+
+### Running SUMO comparison scripts
+
+To run the SUMO 1.28 comparison harnesses, install the pinned packages in a
+Python 3.12+ virtual environment and point to `tests/sumo` from the
+[SUMO v1_28_0 source tree](https://github.com/eclipse-sumo/sumo/tree/v1_28_0/tests/sumo):
 
 ```sh
 python3 -m pip install -r tools/requirements.txt
 export SUMO_HOME="$(python3 -c 'from sumo import SUMO_HOME; print(SUMO_HOME)')"
 export PSIM2_SUMO_BIN="$SUMO_HOME/bin"
-export PSIM2_SUMO_TESTS="/path/to/sumo/tests/sumo"
+export PSIM2_SUMO_TESTS=/path/to/sumo/tests/sumo
 
-python3 tools/sumotest.py --expect-count 323 --derandomize rail  # currently 321/323 (exits 1); see Summary Matrix
-bash tools/cityregress.sh                                        # set PSIM2_BEST_DIR to include 5 Berlin cut-outs
-bash tools/railbench.sh                                          # multi-thread rail grid benchmark vs SUMO
+python3 tools/sumotest.py --expect-count 323 --derandomize rail
+bash tools/cityregress.sh
+bash tools/railbench.sh
 ```
 
-- `tools/cityregress.sh` checks generated networks, buses, edge statistics, official zipper and bicycle cases (with two known bicycle discrepancies verified against their full baseline diff reports), and a scheduled `--edits` case against a SUMO TraCI reference (requires local loopback access). Set `PSIM2_CITY_DIR` and `PSIM2_WORK` to override scratch output directories.
-- `tools/railbench.sh` uses `PYTHON` (default `python3`) to locate the installed `sumo` package when `SUMO_HOME` is unset; set `PSIM2_SUMO_BIN` to point to a custom SUMO binary directory.
-- For full-day BeST Berlin Mitte runs, set `PSIM2_BEST_DIR` to the extracted BeST directory, convert `work/best/mitte.psim2`, then run `python3 tools/bestrun.py {sumo|psim} <seed>` and `python3 tools/bestcompare.py --sumo 1,2,3 --psim 1,2,3`.
+- `cityregress.sh` checks generated networks, buses, edge statistics, SUMO's
+  zipper and bicycle cases (two known bicycle diffs are checked against stored
+  baseline reports), and a scheduled `--edits` case against TraCI (requires
+  local loopback access). Set `PSIM2_BEST_DIR` to include five Berlin cut-outs,
+  and `PSIM2_CITY_DIR` / `PSIM2_WORK` to override scratch paths.
+- `railbench.sh` benchmarks a multithreaded rail grid against SUMO. It locates
+  SUMO via `SUMO_HOME` or `$PYTHON`'s `sumo` package, with `PSIM2_SUMO_BIN` as
+  an override.
+- To rerun BeST Berlin Mitte, set `PSIM2_BEST_DIR` to the extracted BeST v2
+  directory, convert the scene to `work/best/mitte.psim2`, run
+  `python3 tools/bestrun.py {sumo|psim} <seed>`, and compare with
+  `python3 tools/bestcompare.py --sumo 1,2,3 --psim 1,2,3`.
+- `tools/fcddiff.py` diffs SUMO's `fcd.xml` against psim2's `fcd.csv` step by
+  step (IDs, lanes, positions, speeds; tolerance `0.011`).
 
----
+## Limitations
 
-## Repository Layout
+- Command-line batch simulator only: no GUI and no TraCI server.
+- No live topology editing yet: `--edits` only supports lane speed limits and
+  lane permissions (plus internal signal program updates), not adding/removing
+  lanes or rebuilding junctions mid-run.
+- Sublane (`SL2015`) support is partial (207/302 official cases).
+- Not yet implemented: opposite-direction overtaking and two-way left-turn
+  lanes (TWLT), taxis (`MSDevice_Taxi`), `delay_based` and `NEMA` traffic light
+  types, parking maneuvers (`--parking.maneuver`), A* and CH routers, and PLEXE
+  cooperative cruise control (`CC`).
+
+## Plans
+
+No fixed timeline, roughly in these directions:
+
+- Implement the remaining SUMO features (including completing SL2015 sublane
+  support and the missing components listed above).
+- Add live hot-editing support for modifying road network topology during a
+  running simulation.
+- Further optimize multi-core scaling and simulation throughput.
+
+## Repository layout
 
 ```text
-psim2/               C++17 parallel engine (~35k LOC, 39 source/header files) + Makefile
-examples/grid3x3/    Preconverted 3×3 urban grid (113 vehicles) — runs without SUMO
-tests/               Standalone railway regression fixtures and runner (rail_regress.py)
-tools/               SUMO XML converters (psim2net.py, psim2scen.py) and comparison suites
-docs/                Pedestrian and sublane implementation notes (in Chinese)
-.github/workflows/   Cross-platform CI (Ubuntu g++/clang++, macOS clang++ + TSan)
+psim2/             C++17 simulation engine and Makefile
+examples/grid3x3/  Preconverted 3×3 grid (113 vehicles), runs without SUMO
+tests/             Standalone railway regression scenes and rail_regress.py
+tools/             SUMO XML converters (psim2net.py, psim2scen.py) and comparison scripts
+docs/              Pedestrian and sublane notes (in Chinese)
 ```
 
----
+## Issues & feedback
 
-## Known Limitations
+Since this is a personal experiment, bug reports, questions, and feedback via
+GitHub Issues are welcome. If you find a case where psim2 behaves differently
+from SUMO, attaching the input files (or converted `.psim2` scene) and the
+command line makes it much easier to reproduce.
 
-- **No GUI / No TraCI server**: offline batch CLI simulator only.
-- **No live topology editing**: `--edits` supports lane speed limits and lane permissions (plus internal signal phase updates), not adding/removing lanes or rebuilding junctions mid-run.
-- **Partial sublane (`SL2015`) support**: 207/302 official cases match; lateral maneuver reservations and sublane lane-change output remain incomplete.
-- **Unimplemented SUMO features**: opposite-direction overtaking and two-way left-turn lanes (TWLT), taxi dispatch (`MSDevice_Taxi`), `delay_based` / `NEMA` TLS algorithms, parking maneuvers (`--parking.maneuver`), A* / CH routers, and PLEXE cooperative cruise control (`CC`).
-- **Trajectory comparator**: `tools/fcddiff.py` checks IDs, lanes, positions, and speeds step-by-step with a numeric tolerance of `0.011`.
+## License
 
----
+Distributed under the [Eclipse Public License 2.0](LICENSE).
 
-## License & Attributions
-
-Distributed under the **Eclipse Public License 2.0**. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for full upstream attributions to **Eclipse SUMO 1.28.0** (Copyright DLR and contributors) and the **BeST v2** Berlin scenario (CC BY 4.0).
+Most simulation models are adapted from Eclipse SUMO 1.28.0 (Copyright German
+Aerospace Center (DLR) and contributors); see [NOTICE](NOTICE) for detailed
+upstream attributions. The BeST v2 Berlin scenario (DCAITI / TU Berlin,
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)) was used for
+validation only and is not included in this repository.
