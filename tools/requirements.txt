@@ -1,0 +1,3 @@
+# Python environment of the tools (python3 -m venv --system-site-packages .venv && .venv/bin/pip install -r tools/requirements.txt)
+eclipse-sumo==1.28.0
+sumo-data==1.28.0

@@ -1,0 +1,15 @@
+/psim2/build/
+/psim2/psim2
+/psim2/psim2-tsan
+/psim2/psim2-debug
+*.dSYM/
+*.o
+*.log
+.env
+.env.*
+__pycache__/
+*.pyc
+.DS_Store
+/work/
+/.venv/
+/.release-review/

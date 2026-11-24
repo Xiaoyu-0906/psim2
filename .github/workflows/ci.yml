@@ -1,0 +1,93 @@
+name: Build and test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, cxx: g++}
+          - {os: ubuntu-latest, cxx: clang++}
+          - {os: macos-latest, cxx: clang++}
+    runs-on: ${{ matrix.os }}
+    env:
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check portable paths
+        run: |
+          if git grep -IlE '[/](Users|home|Volumes)/'; then exit 1; else test "$?" -eq 1; fi
+      - name: Check script syntax
+        shell: bash
+        run: |
+          for script in tools/*.sh; do bash -n "$script"; done
+          python3 -m py_compile tools/*.py tests/rail_regress.py
+      - name: Check BeST input diagnostics
+        shell: bash
+        run: |
+          unset PSIM2_BEST_DIR
+          for state in unset missing; do
+            if [[ $state == missing ]]; then export PSIM2_BEST_DIR="$RUNNER_TEMP/missing-best"; fi
+            rc=0
+            message=$(python3 tools/bestrun.py sumo 1 2>&1) || rc=$?
+            [[ $rc == 1 && $message == *PSIM2_BEST_DIR* && $message != *Traceback* ]]
+          done
+      - name: Check zlib headers and library
+        shell: bash
+        run: |
+          printf '%s\n' '#include <zlib.h>' 'int main() { return zlibVersion() == nullptr; }' |
+            "$CXX" -std=c++17 -x c++ - -lz -o "$RUNNER_TEMP/check-zlib"
+          "$RUNNER_TEMP/check-zlib"
+      - name: Build
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/psim2-build.log"
+          LC_ALL=C make -C psim2 -j4 2>&1 | tee "$log"
+          if grep -iqE '(^|[[:space:]])warning:' "$log"; then
+            echo 'Compiler warnings found in the release build.' >&2
+            exit 1
+          fi
+      - name: Compare one and four threads
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(mktemp -d)
+          for n in 1 4; do
+            mkdir "$out/$n"
+            ./psim2/psim2 examples/grid3x3/scene.psim2 --threads "$n" --fcd --out "$out/$n/"
+          done
+          python3 - "$out" <<'PY'
+          import csv
+          import hashlib
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          for name, count in (("fcd.csv", 7243), ("tripinfo.csv", 113)):
+              digests = []
+              for n in ("1", "4"):
+                  path = root / n / name
+                  with path.open(newline="") as source:
+                      rows = list(csv.DictReader(source))
+                  if len(rows) != count or {r["id"] for r in rows} != set(map(str, range(113))):
+                      sys.exit(f"{path}: incomplete vehicle data")
+                  digests.append(hashlib.sha256(path.read_bytes()).hexdigest())
+              if digests[0] != digests[1]:
+                  sys.exit(f"{name}: thread counts produced different hashes {digests}")
+              print(f"{name} {count} records {digests[0]}")
+          PY
+      - name: Railway regressions
+        run: python3 tests/rail_regress.py psim2/psim2
+      - name: ThreadSanitizer on four threads
+        if: runner.os == 'macOS'
+        env:
+          TSAN_OPTIONS: halt_on_error=1:exitcode=66
+        run: |
+          make -C psim2 psim2-tsan
+          out=$(mktemp -d)
+          ./psim2/psim2-tsan examples/grid3x3/scene.psim2 --threads 4 --fcd --out "$out/"
+          test "$(wc -l < "$out/tripinfo.csv")" -eq 114

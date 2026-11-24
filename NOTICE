@@ -1,0 +1,21 @@
+psim2 v0.1-experimental
+
+psim2 is distributed under the Eclipse Public License 2.0. See LICENSE.
+
+This project adapts microscopic simulation algorithms from Eclipse SUMO 1.28.0.
+Eclipse SUMO is copyright (C) 2001-2026 German Aerospace Center (DLR) and others.
+The C++ modules identify their upstream models, including MSVehicle, MSLane,
+the car-following and lane-change models, pedestrian striping, rail signals,
+routing and traffic-light logic. The parallel scheduling and simulation state
+layout are specific to psim2. Upstream source and notices:
+https://github.com/eclipse-sumo/sumo/tree/v1_28_0
+
+The traction and resistance curves and train parameters in psim2/railtypes.hpp
+derive from MSCFModel_Rail.h, copyright (C) 2012-2026 German Aerospace Center
+(DLR) and others. The generator preserves the original license notice.
+
+The BeST v2 Berlin traffic scenario from DCAITI, Technische Universität
+Berlin, was used for external validation. The scenario is available separately
+under Creative Commons Attribution 4.0 International.
+https://www.dcaiti.tu-berlin.de/research/simulation/downloads/get/best-scenario-v2.zip
+https://creativecommons.org/licenses/by/4.0/

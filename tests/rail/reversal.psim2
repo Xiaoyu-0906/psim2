@@ -1,0 +1,43 @@
+STEP 1
+TYPE t rail accel=1.0 decel=1.3 sigma=0.0 tau=1.0 length=65.0 minGap=5.0 maxSpeed=44.44444444444444 desiredMaxSpeed=2777.777777777778 width=2.84 emergencyDecel=5.0 apparentDecel=1.3 speedFactorMean=1.0 speedFactorDev=0.0 speedFactorMin=0.2 speedFactorMax=2.0 shapeKind=2 locomotiveLength=16.4 personCapacity=434.0 containerCapacity=0.0
+NETVERSION 1 20
+EDGE :A_0 internal A A -1 -
+LANE :A_0_0 :A_0 0 0.10 0.10 3.2 1048576 8589934591 8589934591 0.00,0.00;0.00,0.00
+EDGE :B_0 internal B B -1 :B_1
+LANE :B_0_0 :B_0 0 20.00 0.10 3.2 1048576 8589934591 8589934591 200.00,0.00;200.00,0.00
+EDGE :B_1 internal B B -1 :B_0
+LANE :B_1_0 :B_1 0 20.00 0.10 3.2 1048576 8589934591 8589934591 200.00,0.00;200.00,0.00
+EDGE :C_0 internal C C -1 -
+LANE :C_0_0 :C_0 0 0.10 0.10 3.2 1048576 8589934591 8589934591 242.00,0.00;242.00,0.00
+EDGE -ab normal B A -1 ab
+LANE -ab_0 -ab 0 20.00 200.00 3.2 1048576 8589934591 8589934591 200.00,0.00;0.00,0.00
+EDGE -bc normal C B -1 bc
+LANE -bc_0 -bc 0 20.00 42.00 3.2 1048576 8589934591 8589934591 242.00,0.00;200.00,0.00
+EDGE ab normal A B -1 -ab
+LANE ab_0 ab 0 20.00 200.00 3.2 1048576 8589934591 8589934591 0.00,0.00;200.00,0.00
+EDGE bc normal B C -1 -bc
+LANE bc_0 bc 0 20.00 42.00 3.2 1048576 8589934591 8589934591 200.00,0.00;242.00,0.00
+LBIDI -ab_0 ab_0
+LBIDI -bc_0 bc_0
+LBIDI :B_0_0 :B_1_0
+LBIDI :B_1_0 :B_0_0
+LBIDI ab_0 -ab_0
+LBIDI bc_0 -bc_0
+JUNC A priority -ab_0 :A_0_0
+REQ A 0 0 0 0
+JUNC B priority -bc_0,ab_0 :B_0_0,:B_1_0
+REQ B 0 00 00 0
+REQ B 1 00 00 0
+JUNC C priority bc_0 :C_0_0
+REQ C 0 0 0 0
+CONN -ab_0 ab_0 :A_0_0 t M - -1 - 1 0
+CONN -bc_0 -ab_0 :B_0_0 s M - -1 - 1 0
+CONN ab_0 bc_0 :B_1_0 s M - -1 - 1 0
+CONN bc_0 -bc_0 :C_0_0 t M - -1 - 1 0
+CONN :A_0_0 ab_0 - t M - -1 - 1 0
+CONN :B_0_0 -ab_0 - s M - -1 - 1 0
+CONN :B_1_0 bc_0 - s M - -1 - 1 0
+CONN :C_0_0 -bc_0 - t M - -1 - 1 0
+ROUTE !train ab bc -bc -ab
+VEH train t !train 0.0 best_prob avg base max - current current
+STOP train @bc_0,-,22 2.0 - 0 - 0
